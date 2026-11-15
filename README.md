@@ -4,7 +4,7 @@
 
 # FBX Exporter Advanced
 
-A Blender add-on that exports the asset assembly to FBX the way 3ds Max writes it after the [Blender → 3ds Max Bridge](https://github.com/IuriiKruglov/BlenderTo3DsMax), without 3ds Max in between. Its first target is **Unity** (Blender → FBX → Unity); other 3D applications that read FBX come second.
+A Blender add-on that exports the asset assembly to FBX the propper way. Its first target is **Unity** (Blender → FBX → Unity); other 3D applications that read FBX come second.
 
 It exists because Blender's stock FBX exporter does a poor job on complex assets for Unity, such as long hierarchies with object animation. The scale is off, objects explode, and the keys and axes are wrong: see [Why not Blender's stock FBX exporter](#why-not-blenders-stock-fbx-exporter).
 
@@ -46,7 +46,7 @@ Blender's own FBX exporter (`io_scene_fbx`; its transform code is the same in Bl
 
 - **The scale is off.** With the default settings, root objects get scale 100. The *Apply Transform* option gives them scale 1, but then objects from the third level of a parent chain down (a child of a child) get the wrong size.
 - **Objects explode.** With *Apply Transform*, those deeper objects also leave their place in the assembly, by metres.
-- **The keys are wrong.** Every frame is re-sampled into XYZ Euler with linear keys and then simplified, so Unity does not get the keys you set. With *Apply Transform*, the animation of the deeper objects is wrong as well.
+- **The keys are wrong.** Every frame is re-sampled into XYZ Euler with linear keys and then simplified, so Unity does not get the keys you set, also they are baked every frame in range generating additional keys in all transform channels. With *Apply Transform*, the animation of the deeper objects is wrong as well.
 - **The axes are wrong.** The Z-up → Y-up conversion is multiplied into the root objects' rotation, and every rotation is written in XYZ order.
 
 | | Blender's stock exporter | This add-on, as 3ds Max writes it |
