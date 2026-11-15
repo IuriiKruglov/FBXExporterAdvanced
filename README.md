@@ -69,7 +69,7 @@ This add-on keeps Blender's exporter for the data and replaces only the assembly
 
 ## Installation
 
-The add-on comes in two forms with the same code inside. Install only one of them. Download it from the [latest release](https://github.com/IuriiKruglov/FBXExporterAdvanced/releases/latest), under *Assets*. The *Source code* archives there are the repository itself, not an add-on Blender can install.
+The add-on comes in two forms with the same code inside. Install only one of them. Download it from the [latest release](https://github.com/IuriiKruglov/FBXExporterAdvanced/releases/latest), under *Assets*. The *Source code* archives there are the repository itself, not an add-on Blender can install. Also you can get addon on [Gumroad](https://tricky3d.gumroad.com/l/FbxExporterAdvanced).
 
 | File | Blender | Installs as |
 |---|---|---|
