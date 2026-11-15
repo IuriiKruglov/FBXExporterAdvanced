@@ -4,7 +4,9 @@
 
 # FBX Exporter Advanced
 
-A Blender add-on that exports the asset assembly to FBX the way 3ds Max writes it after the [Blender → 3ds Max Bridge](https://github.com/IuriiKruglov/BlenderTo3DsMax), without 3ds Max in between. The intended route is **Blender → FBX → Unity**.
+A Blender add-on that exports the asset assembly to FBX the way 3ds Max writes it after the [Blender → 3ds Max Bridge](https://github.com/IuriiKruglov/BlenderTo3DsMax), without 3ds Max in between. Its first target is **Unity** (Blender → FBX → Unity); other 3D applications that read FBX come second.
+
+It exists because Blender's stock FBX exporter does a poor job on complex assets for Unity, such as long hierarchies with object animation. The scale is off, objects explode, and the keys and axes are wrong: see [Why not Blender's stock FBX exporter](#why-not-blenders-stock-fbx-exporter).
 
 - **Geometry, normals, UVs, colours, materials and textures** are written by Blender's own FBX exporter, unchanged.
 - **The assembly is rebuilt the 3ds Max way:**
@@ -23,7 +25,7 @@ Created by Claude (Anthropic) under the leadership of Kruglov Iurii.
 
 ## Contents
 
-- [Why](#why)
+- [Why not Blender's stock FBX exporter](#why-not-blenders-stock-fbx-exporter)
 - [Installation](#installation)
 - [Use](#use)
 - [Options](#options)
@@ -38,16 +40,28 @@ Created by Claude (Anthropic) under the leadership of Kruglov Iurii.
 
 ---
 
-## Why
+## Why not Blender's stock FBX exporter
 
-Blender's stock FBX exporter (`io_scene_fbx`, identical in 3.6 and 5.x on these points) handles the assembly differently from 3ds Max:
+Blender's own FBX exporter (`io_scene_fbx`; its transform code is the same in Blender 3.6 and 5.x) does a poor job on complex assets for Unity, such as long hierarchies with object animation:
 
-| | 3ds Max FBX export (Y-up) | Blender's stock exporter |
+- **The scale is off.** With the default settings, root objects get scale 100. The *Apply Transform* option gives them scale 1, but then objects from the third level of a parent chain down (a child of a child) get the wrong size.
+- **Objects explode.** With *Apply Transform*, those deeper objects also leave their place in the assembly, by metres.
+- **The keys are wrong.** Every frame is re-sampled into XYZ Euler with linear keys and then simplified, so Unity does not get the keys you set. With *Apply Transform*, the animation of the deeper objects is wrong as well.
+- **The axes are wrong.** The Z-up → Y-up conversion is multiplied into the root objects' rotation, and every rotation is written in XYZ order.
+
+| | Blender's stock exporter | This add-on, as 3ds Max writes it |
 |---|---|---|
-| Z-up → Y-up | `PreRotation` −90° X on root nodes only; `Lcl Rotation` keeps the node's own values | Conversion multiplied into the roots' `Lcl Rotation` / `Lcl Translation`. *Apply Transform* is "known to be broken with armatures/animations" (its own tooltip) |
-| Rotation order | Kept (`RotationOrder`) | Always XYZ |
-| Animation | The keys, with tangents | Every frame re-sampled to XYZ Euler, linear keys, then simplified |
-| Bones | Dummies + Skin | Armature node, bone-axis correction |
+| Scale in Unity | **100 on the root objects** (default *Apply Scalings: All Local*) | **1 on every object** |
+| *Apply Transform* | Scale 1, but **breaks parent chains** from the third level down. The option is marked experimental and "known to be broken with armatures/animations" (its own tooltip) | Not needed |
+| Axes | The Z-up → Y-up conversion is multiplied into the root objects' rotation; every rotation is in XYZ order | A −90° X `PreRotation` on the root nodes; `Lcl Rotation` keeps each object's own values, in its own rotation order |
+| Animation | Every frame re-sampled to XYZ Euler, linear keys, then simplified | Blender's keys, with 3ds Max tangents |
+| Bones | Armature node, bone-axis correction | Dummies + Skin, with a bind pose |
+
+**Measured** on a chain of six parented boxes with 54 rotation keys, exported by the stock exporter of Blender 4.2 and 5.2:
+- **Default settings:** the root box has scale 100. Its rotation is written as (−80.9°, 22.9°, −6.3°) instead of its own (11.5°, 5.7°, 22.9°). The 54 keys become 865.
+- ***Apply Transform*:** boxes 1 and 2 are right. Boxes 3 and 4 are 100 times too small, and boxes 5 and 6 are 10,000 times too small. All four are up to 2.2 m out of place. The 54 keys become 1,417.
+- ***Apply Transform* with *Apply Scalings: FBX All*:** from box 3 on, sizes change by up to 19% during the animation, and positions are off by up to 1.6 m.
+- **This add-on:** every box has scale 1, its own rotation values and Blender's 54 keys, and matches Blender within 0.001 cm.
 
 This add-on keeps Blender's exporter for the data and replaces only the assembly.
 
