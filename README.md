@@ -191,7 +191,7 @@ The engine nozzles of the plane in the animations above are skinned. In Blender,
 
 ![Blender: the engine mesh's modifiers, Triangulate and Armature](images/01_Blender_Armature_setup.JPG)
 
-In Unity, the armature object is gone. It is not animated, so its root bone is linked to its parent, the engine mesh, as the bridge does in 3ds Max. The bones arrive as plain transforms (the 3ds Max dummies) under the engine mesh. The mesh has a *Skinned Mesh Renderer* whose *Root Bone* is the first bone:
+In Unity, the armature object is gone with keeping the bones one of which animated, arrive as plain transforms (Blender Empty object, 3ds Max dummies, Unity Game object) under the engine mesh object. The mesh has a *Skinned Mesh Renderer* whose *Root Bone* is the first bone:
 
 ![Unity: the engine mesh with its Skinned Mesh Renderer, the bone dummies under it](images/04_Unity.png)
 
