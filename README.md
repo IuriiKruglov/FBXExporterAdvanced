@@ -128,7 +128,7 @@ FBX Advanced: 65 nodes (no animation), 2 dummies, 1 skins in 0.36 s
 | **Objects** | All Visible | *All Visible* or *Selected* |
 | **Pose Frame** | 0 | Frame of the static pose (the bridge's import frame). Without animation, the assembly is written in this pose |
 | **Export Animation** | On | *On*: the animated assembly. *Off*: the same assembly without animation. The file has no keys and no take, and every node holds its pose at *Pose Frame*, with the same values as in the animated file. The three options below apply only with animation (greyed out without it) |
-| **Keys** | Exact Keys | **Exact Keys:** keys only on Blender's key frames, with 3ds Max auto tangents, like files exported from 3ds Max after the bridge. See [Keys](#keys). **Bake Every Frame:** one key per frame on every animated node |
+| **Keys** | Exact Keys | **Exact Keys:** keys only on Blender's key frames, with 3ds Max auto tangents, like files exported from 3ds Max. See [Keys](#keys). **Bake Every Frame:** one key per frame on every animated node |
 | **Only Animated Channels** | On | Channels whose value never changes get no keys. The node keeps their exact static value, so you do not need to delete dead keys in Blender |
 | **Frame Rate** | Custom, 30 fps | *Custom*: keep Blender's frame numbers and write this frame rate. 30 fps gives the same timing as the bridge's 3ds Max files: a key on frame 24 is at 0.8 s, so an animation made at 24 fps plays 25% faster than in Blender. *Scene*: Blender's frame rate, the same speed as in Blender |
 
@@ -143,7 +143,7 @@ These are passed to Blender's own exporter, with its defaults: *Apply Modifiers*
 With **Exact Keys**, translation, rotation and scale each get keys only on the frames where Blender has location, rotation or scale keys:
 
 - **Key values are exact.** Every node matches Blender on its key frames. 3ds Max shows the same key frames, with no extra keys.
-- **Between keys**, the curve uses 3ds Max auto tangents, as 3ds Max writes them after the bridge.
+- **Between keys**, the curve uses 3ds Max auto tangents, as 3ds Max writes them.
 - **Bone dummies** take their tangent type from Blender's interpolation, as the bridge sets them: *Constant* → step, *Linear* → linear, flat Bézier handles → flat, anything else → auto.
 - **Rotation keys keep Blender's own angle values** when the rotation converts channel for channel (26 of the 28 rotating nodes on the test asset), so a whole turn between two keys survives. Otherwise the angles come from the pose on each key frame, nearest to the previous key.
 - **Quaternion and axis-angle rotation** is converted to Euler keys on its key frames.
@@ -162,7 +162,7 @@ Some animation cannot be written as keys on Blender's key frames. In those cases
 | Item | Value |
 |---|---|
 | Axis | Y-up (`UpAxis` 1, `FrontAxis` +2, `CoordAxis` +0, `OriginalUpAxis` 2), as 3ds Max with *Up Axis: Y-up* |
-| Units | Centimetres, `UnitScaleFactor` 1 (3ds Max *Units: Automatic* with cm system units) |
+| Units | Centimetres, `UnitScaleFactor` 1 (3ds Max and Unity *Units: Automatic* with cm system units) |
 | Root nodes | `PreRotation` (−90, 0, 0) and `RotationActive` 1. Position written as (x, z, −y) |
 | Other nodes | Local transform relative to the 3ds Max parent, in cm |
 | Rotation order | The object's Blender rotation mode (`RotationOrder`, with `RotationActive` 1). Quaternion and axis-angle objects use XYZ. Bone dummies use XYZ, as the bridge creates them |
@@ -175,10 +175,10 @@ Some animation cannot be written as keys on Blender's key frames. In those cases
 | Animation | One take, `Take 001`, layer `BaseLayer`. `T` / `R` / `S` curve nodes on `Lcl Translation` / `Lcl Rotation` / `Lcl Scaling`. With *Export Animation* off: no take, no animation stack, layer or curves |
 | Geometry, materials | Blender's own exporter, Blender's layout (shared mesh data stays shared) |
 
-**Hierarchy rules.** These follow the bridge:
+**Hierarchy rules.** These follow the rules:
 - An armature object becomes a node only when it is animated.
 - Root bones are linked to the armature's parent.
-- Objects parented to a bone are linked to that bone's dummy.
+- Objects parented to a bone are linked to that bone's dummy (Game object, Empty object).
 - Objects parented to an armature that is not a node are linked to its parent.
 
 ---
@@ -216,7 +216,7 @@ Intentional:
 
 ## Verification
 
-Test asset: SaabJASGripenE: 60 meshes, 3 empties, 2 skinned bones, 35 animated nodes, YXZ / ZXY rotation orders.
+Test asset: Plane: 60 meshes, 3 empties, 2 skinned bones, 35 animated nodes, YXZ / ZXY rotation orders.
 
 | Check | Result |
 |---|---|
@@ -249,7 +249,7 @@ Test asset: SaabJASGripenE: 60 meshes, 3 empties, 2 skinned bones, 35 animated n
 
 | Version | Changes |
 |---|---|
-| **0.3.1** | *Frame Rate* defaults to *Custom*, 30 fps, the timing of the bridge's 3ds Max files. First public release, also as a Blender 4.2+ extension |
+| **0.3.1** | *Frame Rate* defaults to *Custom*, 30 fps. First public release, also as a Blender 4.2+ extension |
 | **0.3** | *Export Animation* checkbox: the assembly with animation, or the same assembly without animation in the pose of *Pose Frame* |
 | **0.2** | Renamed to **FBX Exporter Advanced** (menu: *FBX Advanced (.fbx)*). **Exact Keys** (the former *3ds Max Tangents*) is the default. The *Blender Curves* mode is removed: 3ds Max's importer resampled its curves into extra keys. A bind pose is written for skinned meshes |
 | **0.1** | First version, as *FBX Exporter (3ds Max style)*: 3ds Max assembly conventions, Blender curves, 3ds Max tangents and bake modes, only-animated channels, bones as dummies with Skin |
