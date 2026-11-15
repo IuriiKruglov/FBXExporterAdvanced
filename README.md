@@ -49,7 +49,7 @@ Blender's own FBX exporter (`io_scene_fbx`; its transform code is the same in Bl
 - **The keys are wrong.** Every frame is re-sampled into XYZ Euler with linear keys and then simplified, so Unity does not get the keys you set, also they are baked every frame in range generating additional keys in all transform channels. With *Apply Transform*, the animation of the deeper objects is wrong as well.
 - **The axes are wrong.** The Z-up → Y-up conversion is multiplied into the root objects' rotation, and every rotation is written in XYZ order.
 
-| | Blender's stock exporter | This add-on, as 3ds Max writes it |
+| | Blender's stock exporter | This add-on |
 |---|---|---|
 | Scale in Unity | **100 on the root objects** (default *Apply Scalings: All Local*) | **1 on every object** |
 | *Apply Transform* | Scale 1, but **breaks parent chains** from the third level down. The option is marked experimental and "known to be broken with armatures/animations" (its own tooltip) | Not needed |
