@@ -27,7 +27,15 @@ Blender -> 3ds Max Bridge, without going through 3ds Max:
     PreRotation on root nodes, centimetres, local transforms relative to the
     3ds Max parent, Euler rotation orders, keys on Blender's key frames with
     3ds Max tangents (or no animation), armatures as Null "dummies" (Z forward,
-    Y up) with a Skin deformer and a bind pose.
+    Y up) with a Skin deformer and a bind pose;
+  * or, with Bones: Exact Bones, every bone as a skeleton bone (LimbNode) with
+    the Blender bone's own axes, its rest pose as PreRotation (the FBX form of
+    the bridge's Freeze Transform layers) and Blender's channel values as keys;
+  * assemblies where a root bone follows an object through a Child Of (a gun
+    bone on a turret) are rebuilt as the Bridge 2.5 builds them: the dummy
+    hangs under that object with no constraint and keeps its own keys, its axes
+    turned in 90 degree steps so Y points up and Z to the front (user property
+    BlenderBoneAxes), and several Armature modifiers on a mesh become one Skin.
 
 The conventions were measured on 3ds Max 2024 / FBX plug-in 2020.3.2 files.
 """
@@ -35,11 +43,12 @@ The conventions were measured on 3ds Max 2024 / FBX plug-in 2020.3.2 files.
 bl_info = {
     "name": "FBX Exporter Advanced",
     "author": "Kruglov Iurii, Claude (Anthropic)",
-    "version": (0, 3, 1),
+    "version": (0, 4, 0),
     "blender": (3, 6, 0),
     "location": "File > Export > FBX Advanced (.fbx)",
     "description": "FBX export of the asset assembly as 3ds Max writes it: Y-up pre-rotation, centimetres, "
-                   "rotation orders, exact keys, bones as dummies with Skin and bind pose. "
+                   "rotation orders, exact keys, bones as dummies or exact bones with Skin and bind pose, "
+                   "bones linked to objects (Child Of) under those objects. "
                    "Geometry from Blender's FBX exporter",
     "doc_url": "https://github.com/IuriiKruglov/FBXExporterAdvanced",
     "tracker_url": "https://github.com/IuriiKruglov/FBXExporterAdvanced/issues",
@@ -60,7 +69,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, St
 from bpy_extras.io_utils import ExportHelper
 from mathutils import Euler, Matrix, Quaternion, Vector
 
-ADDON_VERSION = "0.3.1"
+ADDON_VERSION = "0.4.0"
 KTIME = 46186158000                       # FBX time units per second
 FBX_VERSION = 7400                        # FBX 2014/2015, like the 3ds Max preset
 CONV = Matrix.Rotation(-math.pi / 2.0, 4, 'X')   # Z-up -> Y-up, written as PreRotation on roots
@@ -368,7 +377,10 @@ class RigPlan:
         self.bones = []
         self.bone_set = set()
         self.bake = False
+        self.exact = False       # Exact Bones: every bone, as a skeleton node with the Blender bone's own axes
         self.parent_ref = None
+        self.links = {}          # root bone -> (node name, ref, Child Of constraint): bone linked to an object
+        self.axes = {}           # bone -> dummy axes in the bone's frame (linked rigs: Y up, Z to the front)
         self.warnings = []
 
 
@@ -397,8 +409,11 @@ def _object_animated(obj):
     return any(not c.mute for c in obj.constraints)
 
 
-def _rig_needs_bake(arm, bones):
-    if any(not c.mute for pb in arm.pose.bones for c in pb.constraints):
+def _rig_needs_bake(arm, bones, links=None):
+    """Constraints, drivers, NLA or partial inheritance: the pose is sampled on every frame. A Child Of
+    that links a root bone to an object (links) is no reason: that bone hangs under the object."""
+    linked = {v[2].as_pointer() for v in (links or {}).values()}
+    if any(not c.mute and c.as_pointer() not in linked for pb in arm.pose.bones for c in pb.constraints):
         return True
     ad = arm.animation_data
     if ad is not None:
@@ -426,29 +441,35 @@ def resolve_parent(obj, plans, scope_set):
     return None
 
 
-def plan_rigs(scope, bake_all=False):
+def plan_rigs(scope, bake_all=False, exact=False):
+    """exact: Exact Bones (every bone, the Blender bone's own axes, as skeleton nodes); else dummies for the
+    deform bones, their parents and the bones carrying objects."""
     scope_set = set(scope)
     plans = {}
     for arm in scope:
         if arm.type != 'ARMATURE':
             continue
         p = RigPlan(arm)
+        p.exact = exact
         bones = arm.data.bones
-        wanted = [b for b in bones if b.use_deform]
-        wanted += [bones[o.parent_bone] for o in scope
-                   if o.parent is arm and o.parent_type == 'BONE' and o.parent_bone in bones]
-        keep = set()
-        for b in wanted:
-            x = b
-            while x is not None and x.name not in keep:
-                keep.add(x.name)
-                x = x.parent
+        if exact:
+            keep = {b.name for b in bones}
+        else:
+            wanted = [b for b in bones if b.use_deform]
+            wanted += [bones[o.parent_bone] for o in scope
+                       if o.parent is arm and o.parent_type == 'BONE' and o.parent_bone in bones]
+            keep = set()
+            for b in wanted:
+                x = b
+                while x is not None and x.name not in keep:
+                    keep.add(x.name)
+                    x = x.parent
         p.bones = [b for b in _bones_parents_first(list(bones)) if b.name in keep]
         p.bone_set = keep
         p.node = _object_animated(arm)
-        p.bake = bake_all or _rig_needs_bake(arm, p.bones)
         if not p.bones:
-            p.warnings.append("Armature '%s' has no deform bones, nothing to convert." % arm.name)
+            p.warnings.append("Armature '%s' has no %s, nothing to convert."
+                              % (arm.name, "bones" if exact else "deform bones"))
         for b in p.bones:
             if b.use_deform and b.bbone_segments > 1:
                 p.warnings.append("Bone '%s' has %d B-Bone segments; it deforms as a straight bone."
@@ -456,7 +477,154 @@ def plan_rigs(scope, bake_all=False):
         plans[arm.name] = p
     for p in plans.values():
         p.parent_ref = ('object', p.arm) if p.node else resolve_parent(p.arm, plans, scope_set)
+    # root bones linked to objects with Child Of (an assembly: CSLM12_Bone_gun -> CSLM12_Hull): the dummy
+    # hangs under that object, with no constraint, as the Blender -> 3ds Max Bridge 2.5 builds it
+    for p in plans.values():
+        for b in p.bones:
+            if b.parent is None:
+                link = _child_of_link(p.arm, b, plans, scope_set)
+                if link is not None:
+                    p.links[b.name] = link
+    _drop_cyclic_links(plans, scope_set)
+    for p in plans.values():
+        p.bake = bake_all or _rig_needs_bake(p.arm, p.bones, p.links)
+        if p.exact:
+            for b in p.bones:
+                p.axes[b.name] = Matrix.Identity(4)          # the Blender bone's own axes
+        elif p.links:
+            # dummies of such a rig: the bone axes turned in 90 degree steps, Y up, Z to the front
+            for b in p.bones:
+                p.axes[b.name] = upright_axes((p.arm.matrix_world @ b.matrix_local).to_3x3())
     return plans
+
+
+def _child_of_link(arm, b, plans, scope_set):
+    """(node name, ref, constraint) when root bone b follows an object (or a converted bone) with one plain
+    Child Of: the only active constraint, full influence, every channel, owner space Pose, target space
+    World, its inverse set, no keys or drivers on the bone's constraints, and the bone where that
+    constraint puts it. Then the bone's local transform under the target is inverse @ rest @ basis.
+    Else None (the rig is sampled on every frame)."""
+    pb = arm.pose.bones.get(b.name)
+    if pb is None:
+        return None
+    active = [c for c in pb.constraints if not c.mute and c.influence > 0.0]
+    if len(active) != 1 or active[0].type != 'CHILD_OF' or _constraints_keyed(arm, b.name):
+        return None
+    c = active[0]
+    flags = ("use_location_x", "use_location_y", "use_location_z", "use_rotation_x", "use_rotation_y",
+             "use_rotation_z", "use_scale_x", "use_scale_y", "use_scale_z")
+    if (c.influence < 1.0 - 1e-6 or not all(getattr(c, f, True) for f in flags) or c.owner_space != 'POSE'
+            or c.target_space != 'WORLD' or getattr(c, "set_inverse_pending", False)):
+        return None
+    t = c.target
+    if t is None or t is arm or t not in scope_set:
+        return None
+    if c.subtarget:
+        tp = plans.get(t.name) if t.type == 'ARMATURE' else None
+        if tp is None or c.subtarget not in tp.bone_set or getattr(c, "head_tail", 0.0) != 0.0:
+            return None
+        tw = t.matrix_world @ t.pose.bones[c.subtarget].matrix
+        return (c.subtarget, ('bone', (tp.name, c.subtarget)), c) if _child_of_holds(arm, pb, tw, c) else None
+    if t.type == 'ARMATURE' and t.name in plans and not plans[t.name].node:
+        return None                     # an armature that is no node
+    return (t.name, ('object', t), c) if _child_of_holds(arm, pb, t.matrix_world, c) else None
+
+
+def _drop_cyclic_links(plans, scope_set):
+    """A link whose target hangs under the linked bone itself (a dependency cycle in Blender, e.g. an object
+    parented to a bone of the rig) would make the bone its own ancestor: it is dropped, and that rig is
+    sampled on every frame."""
+    def parent_of(key):
+        if key[0] == 'object':
+            return resolve_parent(key[1], plans, scope_set)
+        p = plans[key[1][0]]
+        b = p.arm.data.bones[key[1][1]]
+        if b.parent is not None:
+            return ('bone', (p.name, b.parent.name))
+        link = p.links.get(b.name)
+        return link[1] if link is not None else p.parent_ref
+
+    dropped = True
+    while dropped:
+        dropped = False
+        for p in plans.values():
+            for name in list(p.links):
+                start, key, seen = ('bone', (p.name, name)), p.links[name][1], set()
+                while key is not None and key not in seen:
+                    if key == start:
+                        p.warnings.append("Bone '%s' follows '%s' with Child Of, but '%s' hangs under that bone "
+                                          "(a dependency cycle): not linked, the rig is sampled."
+                                          % (name, p.links[name][0], p.links[name][0]))
+                        del p.links[name]
+                        dropped = True
+                        break
+                    seen.add(key)
+                    key = parent_of(key)
+
+
+_CON_PATH = re.compile(r'^pose\.bones\["((?:[^"\\]|\\.)*)"\]\.constraints\[')
+
+
+def _constraints_keyed(arm, bone):
+    """Keys or drivers on the bone's constraints, e.g. a Child Of influence keyed from 1 to 0 (picked up,
+    then dropped): such a link changes in time, so the bone is no child of the target and the rig is
+    sampled on every frame."""
+    ad = arm.animation_data
+    fcs = list(assigned_fcurves(arm)) + (list(ad.drivers) if ad is not None else [])
+    for fc in fcs:
+        m = _CON_PATH.match(fc.data_path)
+        if m and not fc.mute and re.sub(r'\\(.)', r'\1', m.group(1)) == bone:
+            return True
+    return False
+
+
+def _child_of_holds(arm, pb, tw, c):
+    """The bone is where Child Of puts it: armature world @ pose matrix = target world @ inverse @ rest @
+    basis (no drivers or other effects on top)."""
+    want = tw @ Matrix(c.inverse_matrix) @ pb.bone.matrix_local @ pb.matrix_basis
+    got = arm.matrix_world @ pb.matrix
+    tol = 1e-5 * max(1.0, want.translation.length)
+    return max(abs(want[i][j] - got[i][j]) for i in range(3) for j in range(4)) <= tol
+
+
+_UP, _FRONT = Vector((0.0, 0.0, 1.0)), Vector((0.0, -1.0, 0.0))
+
+
+def upright_axes(w3):
+    """Dummy axes in the bone's frame (4x4, a turn by 90 degree steps): dummy Y = the bone axis nearest
+    to the scene's up (+Z), dummy Z = the remaining axis nearest to the front (-Y), X completes them.
+    w3: the bone's axes in the world (rest pose)."""
+    cols = [Vector((w3[0][i], w3[1][i], w3[2][i])).normalized() for i in range(3)]
+    cands = [(i, s) for i in range(3) for s in (1.0, -1.0)]
+    iy, sy = max(cands, key=lambda c: c[1] * cols[c[0]].dot(_UP))
+    iz, sz = max((c for c in cands if c[0] != iy), key=lambda c: c[1] * cols[c[0]].dot(_FRONT))
+    ix = 3 - iy - iz
+    m = Matrix(((0.0,) * 3,) * 3)
+    m[iy][1], m[iz][2], m[ix][0] = sy, sz, 1.0
+    if m.determinant() < 0.0:
+        m[ix][0] = -1.0
+    return m.to_4x4()
+
+
+def bone_axes_code(axes):
+    """The bone's X, Y, Z as dummy axes ("x,-z,y" for the plain dummy axes), as the bridge writes it to
+    the dummy's user property BlenderBoneAxes."""
+    out = []
+    for j in range(3):
+        k = max(range(3), key=lambda k: abs(axes[j][k]))
+        out.append(("-" if axes[j][k] < 0.0 else "") + "xyz"[k])
+    return ",".join(out)
+
+
+def axes_channel_map(axes):
+    """(src, sign): dummy rotation channel a = sign[a] * bone channel src[a], for a turn by 90 degree steps
+    (dummy axis a is bone axis src[a] times sign[a])."""
+    src, sign = [], []
+    for a in range(3):
+        i = max(range(3), key=lambda i: abs(axes[i][a]))
+        src.append(i)
+        sign.append(1.0 if axes[i][a] > 0.0 else -1.0)
+    return tuple(src), tuple(sign)
 
 
 def rig_fcurves(arm):
@@ -481,21 +649,36 @@ def collect_skin_data(context, plans, scope, warnings):
                 and m.object.name in plans and plans[m.object.name].bones and m.show_viewport]
         if not mods:
             continue
-        mod = mods[0]
-        plan = plans[mod.object.name]
-        if len(mods) > 1:
-            warnings.append("'%s': only the first Armature modifier is converted." % o.name)
-        if not mod.use_vertex_groups:
+        if not all(m.use_vertex_groups for m in mods):
             warnings.append("'%s': Armature modifier does not use vertex groups; no skin." % o.name)
             continue
-        if mod.use_bone_envelopes:
+        if any(m.use_bone_envelopes for m in mods):
             warnings.append("'%s': bone envelopes are not converted, only vertex group weights." % o.name)
-        if mod.use_deform_preserve_volume:
+        if any(m.use_deform_preserve_volume for m in mods):
             warnings.append("'%s': 'Preserve Volume' is on; the FBX Skin is linear." % o.name)
-        if mod.vertex_group:
+        # several Armature modifiers (one armature per bone, each masked by its bone's group) become one
+        # Skin with all their bones: the weights blend every bone, like one Armature modifier
+        plans_used = []
+        for m in mods:
+            if plans[m.object.name] not in plans_used:
+                plans_used.append(plans[m.object.name])
+        if len(mods) > 1:
+            warnings.append("'%s': %d Armature modifiers -> one Skin with the bones of %s%s." % (
+                o.name, len(mods), ", ".join("'%s'" % q.name for q in plans_used),
+                "; their vertex group masks are left out (the weights blend all bones)"
+                if any(m.vertex_group for m in mods) else ""))
+        elif mods[0].vertex_group:
             warnings.append("'%s': the Armature modifier vertex group mask is ignored." % o.name)
-        deform = [b.name for b in plan.bones if b.use_deform]
-        index = {n: i for i, n in enumerate(deform)}
+        plan = plans_used[0]
+        deform, bone_arms = [], []
+        for q in plans_used:
+            for b in q.bones:
+                if b.use_deform:
+                    deform.append(b.name)
+                    bone_arms.append(q.name)
+        index = {}
+        for i, n in enumerate(deform):
+            index.setdefault(n, i)
         gnames = [g.name for g in o.vertex_groups]
         eo = o.evaluated_get(dg)
         me = eo.to_mesh(preserve_all_data_layers=True, depsgraph=dg)
@@ -516,7 +699,7 @@ def collect_skin_data(context, plans, scope, warnings):
             nverts = len(me.vertices)
         finally:
             eo.to_mesh_clear()
-        skins[o.name] = {"armature": plan.name, "bones": deform, "vertices": nverts,
+        skins[o.name] = {"armature": plan.name, "bones": deform, "bone_arms": bone_arms, "vertices": nverts,
                          "static_vertices": static, "weights": weights}
     return skins
 
@@ -757,6 +940,11 @@ class XNode:
         self.fcurves = {}         # 'T'/'R'/'S' -> {axis index: fcurve}
         self.euler_src = None     # Blender Euler mode of the channel values (objects and pose bones)
         self.samples = {}         # frame -> local Matrix (Max space)
+        self.axes = DUMMY_AXES    # bone dummies: dummy axes in the bone's frame
+        self.udp = ""             # 3ds Max user properties (UDP3DSMAX), e.g. BlenderBoneAxes of turned dummies
+        self.exact = False        # Exact Bones: a skeleton node with the Blender bone's own axes
+        self.pre = None           # 3x3 PreRotation (exact bones: the rest pose relative to the parent)
+        self.pre_inv = None
 
 
 def build_graph(scope, plans, warnings):
@@ -782,6 +970,15 @@ def build_graph(scope, plans, warnings):
             rmode = p.arm.pose.bones[b.name].rotation_mode
             if rmode in ORDER_ENUM:
                 n.euler_src = rmode                    # dummies stay XYZ, as the bridge creates them
+            if p.exact:
+                n.exact = True
+                n.fbx_class = 'LimbNode'
+                n.axes = p.axes[b.name]
+                if rmode in ORDER_ENUM:
+                    n.order = rmode                    # exact bones keep the bone's Euler order
+            elif b.name in p.axes:
+                n.axes = p.axes[b.name]
+                n.udp = "BlenderBoneAxes = %s\r\n" % bone_axes_code(n.axes)
             nodes.append(n)
             by_bone[(p.name, b.name)] = n
     for n in nodes:
@@ -792,8 +989,12 @@ def build_graph(scope, plans, warnings):
         else:
             p = plans[n.obj.name]
             b = n.obj.data.bones[n.bone]
+            link = p.links.get(n.bone)
             if b.parent is not None:
                 n.parent = by_bone[(p.name, b.parent.name)]
+            elif link is not None:
+                kind, ref = link[1]
+                n.parent = by_obj.get(ref) if kind == 'object' else by_bone.get(ref)
             elif p.parent_ref is not None:
                 kind, ref = p.parent_ref
                 n.parent = by_obj.get(ref) if kind == 'object' else by_bone.get(ref)
@@ -813,7 +1014,7 @@ def node_world(n, U, rest=False):
     elif n.kind == 'bone':
         arm = n.obj
         bm = arm.data.bones[n.bone].matrix_local if rest else arm.pose.bones[n.bone].matrix
-        m = arm.matrix_world @ bm @ DUMMY_AXES
+        m = arm.matrix_world @ bm @ n.axes
     else:
         m = n.obj.matrix_world.copy()
     m.translation = m.translation * U
@@ -824,8 +1025,35 @@ def local_matrices(nodes, U, rest=False):
     w = {n: node_world(n, U, rest) for n in nodes}
     out = {}
     for n in nodes:
-        out[n] = (w[n.parent].inverted_safe() @ w[n]) if n.parent is not None else w[n]
+        out[n] = lcl_space(n, (w[n.parent].inverted_safe() @ w[n]) if n.parent is not None else w[n])
     return out, w
+
+
+def lcl_space(n, m):
+    """The local matrix as the Lcl properties hold it: without the node's PreRotation (exact bones)."""
+    if n.pre is None:
+        return m
+    out = (n.pre_inv @ m.to_3x3()).to_4x4()
+    out.translation = m.translation
+    return out
+
+
+def set_pre_rotations(nodes, plans, loc_pose, loc_rest):
+    """Exact bones: the bone's rest pose relative to its parent goes into the node's PreRotation, the FBX
+    form of the bridge's Freeze Transform layers, so that Lcl Rotation holds Blender's own rotation
+    channels and Lcl Translation the rest offset plus Blender's location in the parent's axes. A root bone
+    linked with Child Of rests in the constraint's frame (inverse @ rest). loc_pose is turned into Lcl space."""
+    for n in nodes:
+        if n.kind != 'bone' or not n.exact:
+            continue
+        link = plans[n.obj.name].links.get(n.bone)
+        if link is not None:
+            rest = Matrix(link[2].inverse_matrix) @ n.obj.data.bones[n.bone].matrix_local
+        else:
+            rest = loc_rest[n]
+        n.pre = rest.to_quaternion().to_matrix()
+        n.pre_inv = n.pre.transposed()
+        loc_pose[n] = lcl_space(n, loc_pose[n])
 
 
 def decompose(m, order, compat=None):
@@ -965,9 +1193,8 @@ class RotationMap:
         self.offset = offset
 
 
-# Bone axes -> dummy axes (DUMMY_AXES): X -> X, Y -> -Z, Z -> Y.
-_DUMMY_SRC = (0, 2, 1)               # dummy channel a comes from bone channel _DUMMY_SRC[a]
-_DUMMY_ROT_SIGN = (1.0, 1.0, -1.0)   # dummy Z = -bone Y
+# Bone axes -> dummy axes (DUMMY_AXES): X -> X, Y -> -Z, Z -> Y, so dummy channel a comes from bone
+# channel (0, 2, 1)[a] with sign (1, 1, -1)[a]; axes_channel_map gives the same for any turned axes.
 
 
 def find_rotation_map(n, pose_frame):
@@ -980,7 +1207,7 @@ def find_rotation_map(n, pose_frame):
     if n.kind == 'object':
         src_r, sign_r = (0, 1, 2), (1.0, 1.0, 1.0)
     else:
-        src_r, sign_r = _DUMMY_SRC, _DUMMY_ROT_SIGN
+        src_r, sign_r = axes_channel_map(n.axes)
     pose_f = pose_frame if pose_frame in n.samples else min(n.samples)
     ref = n.samples[pose_f]
     mapped = {}
@@ -1232,9 +1459,11 @@ def assemble(root, nodes, skins, plans, U, opts, warnings, rest_world, pose_worl
         else:
             n.uid = uids.new()
             attr_uid = uids.new()
-            na = objects.add("NodeAttribute", [attr_uid, _name_class(n.name, "NodeAttribute"), "Null"], "LSS")
-            na.add("TypeFlags", ["Null"], "S")
-            m = objects.add("Model", [n.uid, _name_class(n.name, "Model"), "Null"], "LSS")
+            skel = n.fbx_class == 'LimbNode'
+            na = objects.add("NodeAttribute", [attr_uid, _name_class(n.name, "NodeAttribute"),
+                                               "LimbNode" if skel else "Null"], "LSS")
+            na.add("TypeFlags", ["Skeleton" if skel else "Null"], "S")
+            m = objects.add("Model", [n.uid, _name_class(n.name, "Model"), "LimbNode" if skel else "Null"], "LSS")
             m.add("Version", [232], "I")
             m.add("Properties70")
             m.add("MultiLayer", [0], "I")
@@ -1250,11 +1479,16 @@ def assemble(root, nodes, skins, plans, U, opts, warnings, rest_world, pose_worl
         props.elems = []
         t, r, s = n.static
         root_node = n.parent is None
-        if root_node:
+        if n.pre is not None:                   # exact bones: rest pose, always XYZ (FBX pre-rotation)
+            pre = (CONV.to_3x3() @ n.pre) if root_node else n.pre
+            pre = tuple(math.degrees(a) for a in pre.to_euler('XYZ'))
+            if any(abs(a) > 1e-9 for a in pre):
+                p_vec(props, "PreRotation", pre)
+        elif root_node:
             p_vec(props, "PreRotation", (-90.0, 0.0, 0.0))
         if ORDER_ENUM[n.order]:
             p_int(props, "RotationOrder", "enum", "", ORDER_ENUM[n.order])
-        if root_node or ORDER_ENUM[n.order]:
+        if root_node or ORDER_ENUM[n.order] or n.pre is not None:
             p_int(props, "RotationActive", "bool", "", 1)
         p_int(props, "InheritType", "enum", "", 1)
         p_vec(props, "ScalingMax", (0.0, 0.0, 0.0))
@@ -1266,6 +1500,8 @@ def assemble(root, nodes, skins, plans, U, opts, warnings, rest_world, pose_worl
             p_lcl(props, "Lcl Rotation", r, "R" in an)
         if any(abs(x - 1.0) > 1e-12 for x in s) or "S" in an:
             p_lcl(props, "Lcl Scaling", s, "S" in an)
+        if n.udp:
+            props.add("P", ["UDP3DSMAX", "KString", "", "U", n.udp], "SSSSS")
         props.elems.extend(keep)
 
     # ── Hierarchy ────────────────────────────────────────────────────────────
@@ -1304,8 +1540,9 @@ def assemble(root, nodes, skins, plans, U, opts, warnings, rest_world, pose_worl
                 per_bone[bi][0].append(vi)
                 per_bone[bi][1].append(w)
         targets = []
+        arms_of = sk.get("bone_arms") or [sk["armature"]] * len(sk["bones"])
         for bi, bname in enumerate(sk["bones"]):
-            bn = next((n for n in nodes if n.kind == 'bone' and n.bone == bname and n.obj.name == sk["armature"]),
+            bn = next((n for n in nodes if n.kind == 'bone' and n.bone == bname and n.obj.name == arms_of[bi]),
                       None)
             if bn is not None and per_bone[bi][0]:
                 targets.append((bn, per_bone[bi]))
@@ -1472,8 +1709,8 @@ def assemble(root, nodes, skins, plans, U, opts, warnings, rest_world, pose_worl
 # ═════════════════════════════════════════════════════════════════════════════
 
 def export_fbx_advanced(context, filepath, opts):
-    """opts: scope, pose_frame, animation (bool), fps (None = scene), curves ('EXACT'|'BAKE'),
-    only_animated, geometry settings. Without animation the file is the same, minus the keys and
+    """opts: scope, pose_frame, bones ('DUMMIES'|'EXACT'), animation (bool), fps (None = scene),
+    curves ('EXACT'|'BAKE'), only_animated, geometry settings. Without animation the file is the same, minus the keys and
     the take: static values are computed exactly as for the animated export."""
     t_start = time.perf_counter()
     scene = context.scene
@@ -1499,14 +1736,15 @@ def export_fbx_advanced(context, filepath, opts):
     errors = []
     try:
         scene.frame_set(pose_frame)
-        plans = plan_rigs(scope, bake_all=(mode == 'BAKE'))
+        plans = plan_rigs(scope, bake_all=(mode == 'BAKE'), exact=(opts.get("bones") == 'EXACT'))
         for p in plans.values():
             warnings += p.warnings
         nodes, by_obj, _by_bone = build_graph(scope, plans, warnings)
 
         # static values at the pose frame, bind (rest) matrices for the skin
         loc_pose, w_pose = local_matrices(nodes, U)
-        _loc_rest, w_rest = local_matrices(nodes, U, rest=True)
+        loc_rest, w_rest = local_matrices(nodes, U, rest=True)
+        set_pre_rotations(nodes, plans, loc_pose, loc_rest)
         plan_animation(nodes, plans, scene, mode, warnings)
         frames_needed = {}                      # frame -> nodes to evaluate (with their parents)
         for n in nodes:
@@ -1607,6 +1845,14 @@ class EXPORT_SCENE_OT_fbx_advanced(bpy.types.Operator, ExportHelper):
     pose_frame: IntProperty(name="Pose Frame", default=0,
                             description="Frame of the static pose (the 3ds Max import frame). "
                                         "Without animation, the assembly is written in this pose")
+    bones: EnumProperty(
+        name="Bones",
+        items=(('DUMMIES', "Dummies", "Deform bones, their parents and bones carrying objects become Null dummies "
+                                      "(Z forward, Y up) with a Skin, as the bridge builds them by default"),
+               ('EXACT', "Exact Bones", "Every bone becomes a skeleton bone with the Blender bone's own axes "
+                                        "(Y along the bone), its rest pose as pre-rotation and Blender's channel "
+                                        "values as keys, as the bridge's Exact bones")),
+        default='DUMMIES')
     use_animation: BoolProperty(name="Animation", default=True,
                                 description="Write the animation. Off: the same assembly in the pose of "
                                             "Pose Frame, with no keys and no take")
@@ -1647,6 +1893,7 @@ class EXPORT_SCENE_OT_fbx_advanced(bpy.types.Operator, ExportHelper):
         col = layout.column()
         col.prop(self, "scope")
         col.prop(self, "pose_frame")
+        col.prop(self, "bones")
         col = layout.column(heading="Export")       # the heading labels the first checkbox
         col.prop(self, "use_animation")
         sub = col.column()
@@ -1668,7 +1915,7 @@ class EXPORT_SCENE_OT_fbx_advanced(bpy.types.Operator, ExportHelper):
 
     def execute(self, context):
         opts = {
-            "scope": self.scope, "pose_frame": self.pose_frame, "animation": self.use_animation,
+            "scope": self.scope, "pose_frame": self.pose_frame, "animation": self.use_animation, "bones": self.bones,
             "curves": self.curves, "only_animated": self.only_animated,
             "fps": self.fps_custom if self.fps_mode == 'CUSTOM' else None,
             "geometry": {"use_mesh_modifiers": self.use_mesh_modifiers, "mesh_smooth_type": self.mesh_smooth_type,
@@ -1684,8 +1931,9 @@ class EXPORT_SCENE_OT_fbx_advanced(bpy.types.Operator, ExportHelper):
         for w in stats["warnings"][:8]:
             self.report({'WARNING'}, w)
         anim = ("%d animated" % stats["animated"]) if self.use_animation else "no animation"
-        self.report({'INFO'}, "FBX Advanced: %d nodes (%s), %d dummies, %d skins in %.2f s"
-                    % (stats["nodes"], anim, stats["dummies"], stats["skins"], stats["seconds"]))
+        self.report({'INFO'}, "FBX Advanced: %d nodes (%s), %d %s, %d skins in %.2f s"
+                    % (stats["nodes"], anim, stats["dummies"], "bones" if self.bones == 'EXACT' else "dummies",
+                       stats["skins"], stats["seconds"]))
         return {'FINISHED'}
 
 

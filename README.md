@@ -13,11 +13,12 @@ It exists because Blender's stock FBX exporter does a poor job on complex assets
   - hierarchy and local transforms, with Y-up through a −90° X `PreRotation` on the root nodes;
   - centimetres and Euler rotation orders;
   - keys on Blender's key frames with 3ds Max tangents, or no animation at all;
-  - armatures as Null "dummies" (Z forward, Y up) with a Skin deformer and a bind pose.
+  - armatures as Null "dummies" (Z forward, Y up) with a Skin deformer and a bind pose, or as **exact bones**: skeleton bones with the Blender bones' own axes and keys. See [Exact bones](#exact-bones);
+  - assemblies: a bone that follows an object with a *Child Of* hangs under that object, as the Blender → 3ds Max bridge 2.5 builds it. See [Assemblies](#assemblies-bones-linked-to-objects).
 
 The animations above were exported from Blender with this add-on and played in Unity: landing gear and hatches (left), and the rear view with the skinned engine nozzles (right).
 
-**Version:** 0.3.1 · **Blender:** 3.6 LTS to 5.2 · **License:** GPL-3.0-or-later
+**Version:** 0.4.0 · **Blender:** 3.6 LTS to 5.2 · **License:** GPL-3.0-or-later
 
 Created by Claude (Anthropic) under the leadership of Kruglov Iurii.
 
@@ -31,6 +32,8 @@ Created by Claude (Anthropic) under the leadership of Kruglov Iurii.
 - [Options](#options)
 - [Keys](#keys)
 - [What is written](#what-is-written)
+- [Assemblies: bones linked to objects](#assemblies-bones-linked-to-objects)
+- [Exact bones](#exact-bones)
 - [Example: skinned engine nozzles](#example-skinned-engine-nozzles)
 - [Differences from 3ds Max's own FBX](#differences-from-3ds-maxs-own-fbx)
 - [Verification](#verification)
@@ -73,7 +76,7 @@ The add-on comes in two forms with the same code inside. Install only one of the
 
 | File | Blender | Installs as |
 |---|---|---|
-| `fbx_exporter_advanced-0.3.1.zip` | 4.2 and later | Extension |
+| `fbx_exporter_advanced-0.4.0.zip` | 4.2 and later | Extension |
 | `fbx_exporter_advanced.py` | 3.6 and later | Legacy add-on |
 
 **Blender 4.2 and later (4.5, 5.x)**
@@ -127,6 +130,7 @@ FBX Advanced: 65 nodes (no animation), 2 dummies, 1 skins in 0.36 s
 |---|---|---|
 | **Objects** | All Visible | *All Visible* or *Selected* |
 | **Pose Frame** | 0 | Frame of the static pose (the bridge's import frame). Without animation, the assembly is written in this pose |
+| **Bones** | Dummies | **Dummies:** the deform bones, their parents and the bones carrying objects become Null dummies (Z forward, Y up), as the bridge builds them by default. **Exact Bones:** every bone becomes a skeleton bone with the Blender bone's own axes, its rest pose as `PreRotation` and Blender's channel values as keys, as the bridge's *Exact bones* option builds them. See [Exact bones](#exact-bones) |
 | **Export Animation** | On | *On*: the animated assembly. *Off*: the same assembly without animation. The file has no keys and no take, and every node holds its pose at *Pose Frame*, with the same values as in the animated file. The three options below apply only with animation (greyed out without it) |
 | **Keys** | Exact Keys | **Exact Keys:** keys only on Blender's key frames, with 3ds Max auto tangents, like files exported from 3ds Max. See [Keys](#keys). **Bake Every Frame:** one key per frame on every animated node |
 | **Only Animated Channels** | On | Channels whose value never changes get no keys. The node keeps their exact static value, so you do not need to delete dead keys in Blender |
@@ -149,7 +153,7 @@ With **Exact Keys**, translation, rotation and scale each get keys only on the f
 - **Quaternion and axis-angle rotation** is converted to Euler keys on its key frames.
 
 Some animation cannot be written as keys on Blender's key frames. In those cases, the node (or the whole rig) gets one key per frame, exact on every frame:
-- constraints, drivers and NLA strips;
+- constraints, drivers and NLA strips (a *Child Of* that links a root bone to an object is no reason, see [Assemblies](#assemblies-bones-linked-to-objects));
 - delta transforms, F-Curve modifiers and linear extrapolation;
 - bones that do not inherit rotation or scale.
 
@@ -165,11 +169,12 @@ Some animation cannot be written as keys on Blender's key frames. In those cases
 | Units | Centimetres, `UnitScaleFactor` 1 (3ds Max and Unity *Units: Automatic* with cm system units) |
 | Root nodes | `PreRotation` (−90, 0, 0) and `RotationActive` 1. Position written as (x, z, −y) |
 | Other nodes | Local transform relative to the 3ds Max parent, in cm |
-| Rotation order | The object's Blender rotation mode (`RotationOrder`, with `RotationActive` 1). Quaternion and axis-angle objects use XYZ. Bone dummies use XYZ, as the bridge creates them |
+| Rotation order | The object's Blender rotation mode (`RotationOrder`, with `RotationActive` 1). Quaternion and axis-angle objects use XYZ. Bone dummies use XYZ, as the bridge creates them. Exact bones keep the bone's Euler order (quaternion and axis-angle bones: XYZ) |
 | Every node | `InheritType` 1, `ScalingMax`, `DefaultAttributeIndex` |
 | Hierarchy | As the bridge builds it in 3ds Max (see below) |
-| Bones | Every deform bone, its parents and bones carrying objects become a Null node named like the bone, with the bone's axes turned +90° about its X axis (Z forward, Y up) |
-| Skin | `Skin` deformer on the mesh, one `Cluster` per deform bone with the weights normalized like Blender's Armature modifier. `TransformLink` = bone dummy in the rest pose, `Transform` = inverse(`TransformLink`) × mesh |
+| Bones | *Dummies:* every deform bone, its parents and bones carrying objects become a Null node named like the bone, with the bone's axes turned +90° about its X axis (Z forward, Y up). In [assemblies](#assemblies-bones-linked-to-objects), the axes are turned in 90° steps so that Y points up and Z to the front. *Exact Bones:* every bone becomes a `LimbNode` (`TypeFlags: Skeleton`) named like the bone, with the bone's own axes and its rest pose as `PreRotation` (see [Exact bones](#exact-bones)) |
+| User properties | `UDP3DSMAX` with `BlenderBoneAxes = …` on the dummies of [assemblies](#assemblies-bones-linked-to-objects), as the bridge sets it in 3ds Max. No other node gets one |
+| Skin | `Skin` deformer on the mesh, one `Cluster` per deform bone with the weights normalized like Blender's Armature modifier. `TransformLink` = bone dummy in the rest pose, `Transform` = inverse(`TransformLink`) × mesh. Several Armature modifiers on one mesh give one Skin with the bones of all of them |
 | Bind pose | One `BindPose`, named `BIND_POSES` as 3ds Max names it. It holds the skinned meshes, every bone dummy of their clusters and all their parents. Bone matrices are the clusters' `TransformLink`; meshes and other objects use the pose frame. 3ds Max's importer takes the Skin's initial pose from it, instead of warning that the *Initial Pose* is missing |
 | Unweighted vertices | Bound to a `<mesh>__SkinStatic` Null under the mesh |
 | Animation | One take, `Take 001`, layer `BaseLayer`. `T` / `R` / `S` curve nodes on `Lcl Translation` / `Lcl Rotation` / `Lcl Scaling`. With *Export Animation* off: no take, no animation stack, layer or curves |
@@ -178,8 +183,63 @@ Some animation cannot be written as keys on Blender's key frames. In those cases
 **Hierarchy rules.** These follow the rules:
 - An armature object becomes a node only when it is animated.
 - Root bones are linked to the armature's parent.
-- Objects parented to a bone are linked to that bone's dummy (Game object, Empty object).
+- A root bone that follows an object (or a bone of another armature) with a plain *Child Of* is linked to that object's node (or that bone's dummy). See [Assemblies](#assemblies-bones-linked-to-objects).
+- Objects parented to a bone are linked to that bone's dummy or exact bone (Game object, Empty object).
 - Objects parented to an armature that is not a node are linked to its parent.
+
+---
+
+## Assemblies: bones linked to objects
+
+In an assembly the bones of one skin hang under different objects. In the CSLM12 gun mount, the ammunition belt `CSLM12_Belt` is skinned by two bones: `CSLM12_Bone_gun` moves with the turret `CSLM12_Hull`, and `CSLM12_Bone_box` with `CSLM12_Base`. In Blender that is one armature whose root bones follow their objects with **Child Of** constraints (the 3ds Max → Blender bridge 0.9 builds it this way). The FBX holds it as 3ds Max does after the Blender → 3ds Max bridge 2.5:
+
+```
+Blender:  CSLM12_Base → CSLM12_Belt_Armature (CSLM12_Bone_gun, CSLM12_Bone_box)
+          CSLM12_Bone_gun: Child Of CSLM12_Hull      CSLM12_Bone_box: Child Of CSLM12_Base
+FBX:      CSLM12_Base → CSLM12_Arm → CSLM12_Hull → CSLM12_Bone_gun
+          CSLM12_Base → CSLM12_Bone_box
+          CSLM12_Belt: Skin (CSLM12_Bone_gun, CSLM12_Bone_box)
+```
+
+A root bone counts as linked when its only active constraint is a plain *Child Of*:
+- full influence, every location / rotation / scale channel;
+- owner space *Pose* and target space *World* (the defaults on a bone);
+- no keys or drivers on the bone's constraints;
+- the bone is where that constraint puts it;
+- its target is exported: an object, or a bone of another armature.
+
+What the FBX gets:
+- **Node.** The bone's dummy is a child of the target (the object's node, or the other bone's dummy), with no armature node and no constraint. Its local transform is `inverse · rest · basis` (Blender's *Child Of*: bone world = target world · inverse · pose matrix). So it moves with the target, and with *Exact Keys* its own keys stay keys: a *Child Of* link alone does not bake the rig any more.
+- **Dummy axes.** Every dummy of such a rig takes its bone's axes turned in 90° steps, so that **Y points up in the scene and Z to the front**, whatever way the bone points. The dummy carries the 3ds Max user property `BlenderBoneAxes`: the bone's X, Y and Z as dummy axes (`x,-z,y` would be the plain dummy). The 3ds Max → Blender bridge (0.9) reads it to give the bones back their own axes.
+- **Skin.** Bound in the armature's rest pose, as in Blender. Several Armature modifiers on one mesh (for example one armature per bone, each masked by its bone's vertex group) become one Skin with all their bones.
+
+A root bone that is not linked (a *Child Of* with less than full influence or keyed influence, another constraint, a target that is not exported or that hangs under the bone itself) is handled as before: its rig is sampled on every frame, and its dummies keep the plain axes.
+
+---
+
+## Exact bones
+
+With **Bones: Exact Bones** every armature is written as the same bone rig as in Blender, like the bridge's *Exact bones* option builds it in 3ds Max:
+
+| | Dummies (default) | Exact Bones |
+|---|---|---|
+| FBX node | `Null` | `LimbNode`, a skeleton bone (`TypeFlags: Skeleton`) |
+| Which bones | Deform bones, their parents, bones with child objects | Every bone of the armature; the deform bones go into the Skin |
+| Axes | Bone axes turned +90° about X (Z forward, Y up); in assemblies, Y up and Z to the front | The Blender bone's own axes: Y along the bone, X and Z as set by its roll |
+| Rest pose relative to the parent | Part of the local transform | `PreRotation`, the FBX form of the bridge's *Freeze Transform* layers |
+| Rotation keys | Blender's values where the rotation converts channel for channel, otherwise the pose on each key frame | Blender's own Euler values, in the bone's rotation order |
+| Armature object | None, unless it is animated | None, unless it is animated |
+
+```
+Blender:  Engine  →  Armature  →  Bone_01  →  Bone_02        (parent → child)
+FBX:      Engine  →  Bone_01  →  Bone_02                      (LimbNode)
+```
+
+- **Hierarchy.** As with dummies: child bones under their parent bones, root bones under the armature's parent (or under the object they follow with *Child Of*, see [Assemblies](#assemblies-bones-linked-to-objects)), and objects parented to a bone under that bone.
+- **Keys are Blender's keys.** The bone's rest rotation relative to its parent is the node's `PreRotation`, so `Lcl Rotation` holds Blender's rotation channels: the same values on the same key frames, whole turns included (0° → 400° stays 400°). `Lcl Translation` holds the rest offset plus Blender's location in the parent's axes, and `Lcl Scaling` Blender's scale (times the armature's scale for root bones). Quaternion and axis-angle bones get Euler XYZ keys on their key frames.
+- **Linked root bones** rest in the *Child Of* frame (`inverse · rest`), so their keys are Blender's keys as well.
+- **Skin and bind pose** as with dummies: the cluster's `TransformLink` is the bone in its rest pose, with its own axes.
+- **Baked rigs** (constraints, drivers, NLA, partial inheritance, or *Bake Every Frame*) get a key on every frame, exact on every frame.
 
 ---
 
@@ -210,7 +270,8 @@ Intentional:
 - **Static rotation of non-XYZ nodes.** For nodes with a YXZ / ZXY / … rotation order, 3ds Max writes the static `Lcl Rotation` as XYZ angles. A channel without keys then falls back to a wrong value: on the test asset this moves two hatches by 2.35° and the air brakes by 0.67°. This exporter writes the correct value, so deleting keys never changes the orientation.
 - **One tangent sign.** One mirrored strut has a wrong rotation slope sign in 3ds Max's file. This exporter writes the correct sign. All other slopes are written exactly as 3ds Max writes them, including its unit for rotation slopes (radians per second, while the values are in degrees).
 - **Bind pose.** 3ds Max's file has none, so 3ds Max's own importer warns about the *Initial Pose*. This exporter writes one.
-- **Not written** (3ds Max bookkeeping): Physical-material parameters, `MaxHandle`, `UDP3DSMAX`, display layers.
+- **Exact bones.** No FBX that 3ds Max exported from the bridge's exact bones was available to compare with. In 3ds Max those bones hold their rest pose in *Freeze Transform* layers. This exporter writes it as the bone's `PreRotation`, the FBX equivalent, while 3ds Max's own files use `PreRotation` only for the axis conversion of root nodes.
+- **Not written** (3ds Max bookkeeping): Physical-material parameters, `MaxHandle`, display layers. User properties (`UDP3DSMAX`) only on the dummies of [assemblies](#assemblies-bones-linked-to-objects), where they hold `BlenderBoneAxes`. After the bridge 2.5, 3ds Max also writes `BlenderBoneAxes = x,-z,y` on the plain dummies; without it the 3ds Max → Blender bridge takes the same plain axes.
 
 ---
 
@@ -228,6 +289,9 @@ Test asset: Plane: 60 meshes, 3 empties, 2 skinned bones, 35 animated nodes, YXZ
 | Geometry vs 3ds Max's file | Same vertices, polygons, UVs, colours and edges; normals within 0.0009 (Blender 5.2 vs 3.6 weighted normals) |
 | Blender 4.2 LTS and 5.2 | Same result. Code checked against Blender 3.6 APIs and Python 3.10 |
 | Stress scene: quaternion bones, Euler bones, connected bones, constraints, Cycles modifier, object on a bone, unweighted vertices | Exact at every key frame; baked nodes exact on every frame |
+| Assemblies: the CSLM12 gun mount (one armature with *Child Of*, and the hand-made version with two armatures), and test rigs with a bone linked to a bone of another armature, an armature moved after *Set Inverse*, an object parented to a bone of a linked rig, and links that must not be made (half influence, keyed influence, hidden target, a target that hangs under the bone itself) | Node world matrices vs Blender ≤ 0.00006 cm on key frames (*Exact Keys*) and on every frame (*Bake Every Frame*); the skinned mesh computed from the FBX clusters vs Blender's mesh ≤ 0.00011 cm; bind pose valid. Blender 4.2 and 5.2 |
+| *Exact Bones*: a rig with Euler bones in four rotation orders, a whole turn (0° → 400°), location and scale keys, a non-deform control bone, an object on a bone, a scaled armature and a root bone linked with *Child Of*; the test asset, the stress scene, the CSLM12 assemblies and the test rigs above | Node world matrices vs Blender ≤ 0.0001 cm (on key frames with *Exact Keys*, on every frame with *Bake Every Frame*); the skinned mesh computed from the FBX clusters ≤ 0.0002 cm; `Lcl Rotation` keys equal Blender's Euler channel values (≤ 0.00002°); bind pose valid. The independent ufbx reader gives the same node world matrices (≤ 0.0001 cm). Blender 4.2 and 5.2 |
+| Scenes without linked bones: the test asset, two more assets and the stress scenes, with and without animation, and with *Bake Every Frame* | The same file as 0.3.1: 27 exports compared, only the creation time and Blender's random document ID differ |
 
 ---
 
@@ -238,10 +302,11 @@ Test asset: Plane: 60 meshes, 3 empties, 2 skinned bones, 35 animated nodes, YXZ
 - **Shape key animation** is not exported. Shape keys themselves are written by Blender's exporter.
 - **Collection instances** are not converted (you get a warning).
 - **Skinning:**
-  - only the first Armature modifier of a mesh is converted;
+  - several Armature modifiers on one mesh become one Skin. Blender applies them one after another, so where a vertex has weights in more than one of them, its result differs from the Skin;
   - envelopes, the vertex-group mask and *Preserve Volume* are ignored (warnings);
   - B-Bone curvature is not converted.
 - **Units:** centimetres only.
+- **Assemblies:** a link is a fixed parent. A bone that is picked up and dropped (keyed *Child Of* influence) is not linked; it is baked under the armature's parent.
 
 ---
 
@@ -249,6 +314,7 @@ Test asset: Plane: 60 meshes, 3 empties, 2 skinned bones, 35 animated nodes, YXZ
 
 | Version | Changes |
 |---|---|
+| **0.4.0** | **Bones: Exact Bones** option: every bone becomes a skeleton bone (`LimbNode`) with the Blender bone's own axes, its rest pose as `PreRotation` and Blender's channel values as keys, as the bridge's *Exact bones* option builds them. **Assemblies:** a root bone that follows an object (or a bone of another armature) with a plain *Child Of* becomes a dummy under that object, with no constraint and its own keys, instead of a per-frame bake. The dummies of such rigs point Y up and Z to the front (the bone's axes turned in 90° steps) and carry the 3ds Max user property `BlenderBoneAxes`, as the Blender → 3ds Max bridge 2.5 builds them. Several Armature modifiers on one mesh become one Skin. Scenes without such links give the same file as 0.3.1 |
 | **0.3.1** | *Frame Rate* defaults to *Custom*, 30 fps. First public release, also as a Blender 4.2+ extension |
 | **0.3** | *Export Animation* checkbox: the assembly with animation, or the same assembly without animation in the pose of *Pose Frame* |
 | **0.2** | Renamed to **FBX Exporter Advanced** (menu: *FBX Advanced (.fbx)*). **Exact Keys** (the former *3ds Max Tangents*) is the default. The *Blender Curves* mode is removed: 3ds Max's importer resampled its curves into extra keys. A bind pose is written for skinned meshes |
